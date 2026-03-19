@@ -22,9 +22,9 @@ const FLUX_ASPECT: Record<string, string> = {
   '1:1':    '1:1',
 }
 
-// Aspect ratio → Ideogram resolution enum
+// Aspect ratio → Ideogram resolution enum (valid values from Ideogram API)
 const IDEOGRAM_RESOLUTION: Record<string, string> = {
-  '4:5':    'RESOLUTION_864_1080',
+  '4:5':    'RESOLUTION_896_1088',   // closest valid to 4:5
   '9:16':   'RESOLUTION_768_1344',
   '1.91:1': 'RESOLUTION_1344_768',
   '1:1':    'RESOLUTION_1024_1024',
@@ -126,8 +126,9 @@ async function generateIdeogram(
   source_image_url?: string,
   brand_colors?: string
 ): Promise<string[]> {
+  // Custom color palettes use { members } only — no name field
   const colorPalette = brand_colors
-    ? { name: 'CUSTOM', members: parseBrandColors(brand_colors) }
+    ? { members: parseBrandColors(brand_colors) }
     : undefined
 
   const imageRequest: Record<string, unknown> = {
@@ -138,10 +139,22 @@ async function generateIdeogram(
     magic_prompt_option: 'ON',
     rendering_quality: 'QUALITY',
     ...(colorPalette && { color_palette: colorPalette }),
-    ...(source_image_url && {
-      image_weight: 85,
-      image_input: { url: source_image_url },
-    }),
+  }
+
+  // Image-to-image (overlay pass) uses /remix endpoint, not /generate
+  if (source_image_url) {
+    const res = await fetch('https://api.ideogram.ai/remix', {
+      method: 'POST',
+      headers: { 'Api-Key': IDEOGRAM_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_request: imageRequest,
+        image_weight: 85,
+        image_url: source_image_url,
+      }),
+    })
+    if (!res.ok) throw new Error(`Ideogram remix failed: ${await res.text()}`)
+    const { data } = await res.json()
+    return (data as { url: string }[]).map((d) => d.url)
   }
 
   const res = await fetch('https://api.ideogram.ai/generate', {
@@ -149,7 +162,7 @@ async function generateIdeogram(
     headers: { 'Api-Key': IDEOGRAM_KEY, 'Content-Type': 'application/json' },
     body: JSON.stringify({ image_request: imageRequest }),
   })
-  if (!res.ok) throw new Error(`Ideogram failed: ${await res.text()}`)
+  if (!res.ok) throw new Error(`Ideogram generate failed: ${await res.text()}`)
   const { data } = await res.json()
   return (data as { url: string }[]).map((d) => d.url)
 }
@@ -186,8 +199,12 @@ async function uploadToStorage(
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: CORS })
 
+  let generated_ad_id: string | undefined
+
   try {
-    const { generated_ad_id, prompt_result, user_id } = await req.json()
+    const body = await req.json()
+    generated_ad_id = body.generated_ad_id
+    const { prompt_result, user_id } = body
 
     if (!generated_ad_id || !prompt_result) {
       return new Response(
@@ -349,16 +366,13 @@ serve(async (req) => {
   } catch (error) {
     console.error('generate-image error:', error)
 
-    // Store the error in the DB if we have an ID
-    try {
-      const body = await req.clone().json().catch(() => ({}))
-      if (body.generated_ad_id) {
-        await supabase.from('generated_ads').update({
-          status: 'error',
-          error_message: error.message,
-        }).eq('id', body.generated_ad_id)
-      }
-    } catch { /* best-effort */ }
+    // generated_ad_id is captured at outer scope, safe to use here
+    if (generated_ad_id) {
+      await supabase.from('generated_ads').update({
+        status: 'error',
+        error_message: error.message,
+      }).eq('id', generated_ad_id).catch(() => { /* best-effort */ })
+    }
 
     return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: CORS })
   }

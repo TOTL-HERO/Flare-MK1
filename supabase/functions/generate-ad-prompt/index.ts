@@ -221,7 +221,7 @@ Service area: ${service_area || 'local area'}${offer_text ? `\nSpecial offer: "$
 The ad must drive immediate phone calls from homeowners. Make the flux_prompt cinematic and photorealistic. Make the ideogram_text_prompt crystal clear about text placement and typography.${retryNote}`
 
       const response = await anthropic.messages.create({
-        model: 'claude-opus-4-5',
+        model: 'claude-opus-4-6',
         max_tokens: 1200,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: userMessage }]
